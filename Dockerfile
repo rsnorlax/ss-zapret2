@@ -66,10 +66,9 @@ RUN apk add --no-cache \
       iptables \
       ip6tables \
       nftables \
-      netcat-openbsd && \
-    apk add --no-cache -X https://dl-cdn.alpinelinux.org/alpine/edge/testing shadowsocks-libev
-
-EXPOSE 1080 8388
+      netcat-openbsd \
+      shadowsocks-rust-sslocal \
+      shadowsocks-rust-ssserver
 
 WORKDIR /opt
 
