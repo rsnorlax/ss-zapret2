@@ -8,7 +8,7 @@
 
 - наружу публикуется только SOCKS5 на loopback хоста, по умолчанию `127.0.0.1:1081`, TCP и UDP;
 - внутренний Shadowsocks-сервер слушает только loopback контейнера и не публикуется;
-- `shadowsocks-rust` берётся из стабильного Alpine 3.21 `community` вместо `shadowsocks-libev` из `edge/testing`;
+- `shadowsocks-rust` v1.21.2 берётся из официальных upstream release-архивов с full features и проверкой SHA256;
 - версия zapret2 задаётся build arg `ZAPRET_TAG`, а не требует изменения `Dockerfile`;
 - GHCR CI собирает `linux/amd64` и `linux/arm64`.
 
@@ -30,18 +30,19 @@ sslocal ── Shadowsocks по loopback контейнера ──► ssserver
                                                   Интернет
 ```
 
-Порт `1081` не конфликтует с текущим ByeDPI на `127.0.0.1:1080`. У контейнера отдельное сетевое пространство имён, поэтому его правила `nftables`/`iptables` не должны менять сеть хоста или контейнер ByeDPI.
+Порт `1081` не конфликтует с текущим ByeDPI на `127.0.0.1:1080`. У контейнера отдельное сетевое пространство имён и стандартная Docker bridge-сеть `docker0`, поэтому его правила `nftables` не меняют fw4 хоста или сеть контейнера ByeDPI. `network_mode: host` и `privileged: true` намеренно не используются; контейнер получает только capability `NET_ADMIN` для собственного namespace.
 
 ### Почему `shadowsocks-rust`
 
 Решение основано не на недоказанном обещании большей скорости, а на воспроизводимости и поддержке:
 
-- Alpine 3.21 содержит `shadowsocks-rust` 1.21.2 для `x86_64` и `aarch64` в стабильном `community`;
+- используются официальные musl release-бинарники `shadowsocks-rust` v1.21.2 для `x86_64` и `aarch64`, собранные upstream с feature `full`;
+- SHA256 каждого архитектурного архива закреплён в `Dockerfile` и проверяется до распаковки;
 - upstream-контейнер устанавливает `shadowsocks-libev` из меняющегося `edge/testing`;
-- официальный `shadowsocks-rust` поддерживает SOCKS5, `-U@@ (TCP+UDP) и `--dns@@;
+- официальный `shadowsocks-rust` поддерживает SOCKS5, `-U` (TCP+UDP), `--dns` и защищённые predefined resolvers, включая `quad9_tls`;
 - CLI используется напрямую, без генерации JSON и связанных с ней проблем экранирования.
 
-Цена решения — примерно 10 МБ установленных бинарников `sslocal`/`ssserver` вместо более компактного libev runtime. Нагрузочное преимущество не заявляется без отдельного теста на NanoPi; совместимость подтверждается multi-arch сборкой и проверками TCP/UDP/DNS.
+В runtime image копируются только `sslocal` и `ssserver`; `ca-certificates` остаётся для проверки TLS-цепочки DNS-over-TLS. Нагрузочное преимущество не заявляется без отдельного теста на NanoPi; совместимость подтверждается multi-arch сборкой и проверками TCP/UDP/DNS.
 
 > [!CAUTION]
 > В режиме `nfqws` контейнер работает только на Linux из-за отсутствия `nfqueue` на других ОС
@@ -125,11 +126,13 @@ SS_PASSWORD=change-me-before-use            # Внутренний ключ sslo
 SS_ENCRYPT_METHOD=chacha20-ietf-poly1305    # Метод шифрования
 SS_TIMEOUT=300                              # Таймаут подключения
 SS_VERBOSE=0                                # 1 включает подробные логи
-DNS_SERVER=1.1.1.1                          # DNS для удалённого резолвинга ssserver
+DNS_SERVER=quad9_tls                        # Quad9 DNS-over-TLS для ssserver
 ```
 
 > [!NOTE]
-> `SS_PORT` не публикуется на хост. Он нужен только для связи двух процессов внутри контейнера. Пустой `DNS_SERVER` включает системный resolver контейнера.
+> `SS_PORT` не публикуется на хост. Он нужен только для связи двух процессов внутри контейнера. `DNS_SERVER` можно переопределить через `.env`; пустое значение включает системный resolver контейнера.
+
+Podkop FakeIP нельзя использовать как resolver для `ssserver`: имена вроде `www.youtube.com` и `*.googlevideo.com` могут превратиться в адреса из `198.18.0.0/15`, значимые только внутри стека Podkop и неприменимые в network namespace контейнера. Прямой public UDP/53 (`1.1.1.1`, `8.8.8.8`) также может перехватываться или фильтроваться провайдером. Поэтому профиль по умолчанию использует `quad9_tls`, чтобы `ssserver` самостоятельно получал реальные публичные адреса через DNS-over-TLS. Доступ к DNS OpenWrt на `172.17.0.1:53` и временное правило `Allow-Docker-DNS` для целевой конфигурации не нужны.
 
 Список переменных окружения в `docker-compose.yml`:
 
@@ -142,7 +145,7 @@ DNS_SERVER=1.1.1.1                          # DNS для удалённого р
 | `SS_ENCRYPT_METHOD`                         | `chacha20-ietf-poly1305` | Метод Shadowsocks |
 | `SS_TIMEOUT`                                | `300`                 | Таймаут в секундах |
 | `SS_VERBOSE`                                | `0`                   | `1` включает подробные логи |
-| `DNS_SERVER`                                | пусто / `1.1.1.1`       | DNS resolver для `ssserver` |
+| `DNS_SERVER`                                | `quad9_tls`            | Защищённый DNS resolver для `ssserver`; можно переопределить |
 
 4. Соберите и запустите контейнер:
 
@@ -152,7 +155,26 @@ docker compose up -d
 docker compose ps
 ```
 
-На хосте должны появиться только `127.0.0.1:1081/tcp` и `127.0.0.1:1081/udp`. Фиксированного `container_name` нет, поэтому отдельный Compose project можно поднять параллельно для теста.
+На хосте должны появиться только `127.0.0.1:1081/tcp` и `127.0.0.1:1081/udp`. Compose явно использует `network_mode: bridge`, то есть стандартный `docker0`, а не автоматически создаваемый `br-...`. Фиксированного `container_name` нет, поэтому отдельный Compose project можно поднять параллельно для теста.
+
+#### OpenWrt fw4 и `docker0`
+
+На OpenWrt интерфейс стандартного Docker bridge должен входить в отдельную fw4 zone, которой разрешён только forwarding в WAN. Input с этой зоны оставляйте `REJECT`: контейнеру не нужен доступ к сервисам самого роутера. Пример целевой формы `/etc/config/firewall` (имя логического network может отличаться):
+
+```uci
+config zone
+        option name 'dockerout'
+        list network 'docker'
+        option input 'REJECT'
+        option output 'ACCEPT'
+        option forward 'REJECT'
+
+config forwarding
+        option src 'dockerout'
+        option dest 'wan'
+```
+
+Логический network `docker` должен ссылаться на device `docker0`. Это пример ручной настройки хоста, а не действие контейнера: проект не меняет fw4 и не требует `host` network или `privileged`.
 
 ## Изменение конфигурации
 
@@ -166,17 +188,16 @@ nano config
 
 ```
 NFQWS2_OPT="
---filter-tcp=80 --filter-l7=http --payload http_req --lua-desync=http_methodeol --new
---filter-tcp=443 --filter-l7=tls --payload=tls_client_hello --hostlist-domains=youtube.com,googlevideo.com,youtubei.googleapis.com --lua-desync=multisplit:pos=10:seqovl=1 --new
---filter-tcp=443 --filter-l7=tls --payload=tls_client_hello --lua-desync=multidisorder:pos=2 --new
---filter-udp=443 --filter-l7=quic --payload=quic_initial --lua-desync=fake:blob=fake_default_quic:repeats=6
+--filter-tcp=80 --filter-l7=http --payload http_req --hostlist-domains=youtube.com,googlevideo.com,youtubei.googleapis.com,ggpht.com,ytimg.com --lua-desync=http_methodeol --new
+--filter-tcp=443 --filter-l7=tls --payload=tls_client_hello --hostlist-domains=youtube.com,googlevideo.com,youtubei.googleapis.com,ggpht.com,ytimg.com --lua-desync=multidisorder:pos=midsld --new
+--filter-udp=443 --filter-l7=quic --payload=quic_initial --hostlist-domains=youtube.com,googlevideo.com,youtubei.googleapis.com,ggpht.com,ytimg.com --lua-desync=fake:blob=fake_default_quic:repeats=6
 "
 ```
 
-- `--filter-tcp=80` - стратегия для всего HTTP трафика
-- `--filter-tcp=443 ... --hostlist-domains=youtube.com,googlevideo.com,youtubei.googleapis.com` - стратегия для HTTPS для определенных доменов
-- `--filter-tcp=443` - стратегия для всего остального HTTPS трафика
-- `--filter-udp=443` - стратегия для всего HTTP3 (QUIC) трафика
+- `--filter-tcp=80 ... --hostlist-domains=...` — стратегия только для YouTube HTTP;
+- `--filter-tcp=443 ... --hostlist-domains=...` — проверенная стратегия только для YouTube HTTPS;
+- `--filter-udp=443 ... --hostlist-domains=...` — QUIC desync только для того же YouTube hostlist; zapret2 v1.0.6 извлекает SNI из QUIC Initial и применяет hostlist как фильтр профиля;
+- generic TLS fallback отсутствует, поэтому произвольный HTTPS через SOCKS не получает ненужную desync-обработку.
 
 После внесения изменений не забудьте перезапустить контейнер:
 
@@ -252,7 +273,7 @@ docker compose restart
 
 В контейнер интегрирован [blockcheckw](https://github.com/rcd27/blockcheckw). Это форк `blockcheck2` от [rcd27](https://github.com/rcd27), написанный на Rust.
 
-Для его работы в конфиге необходимо переключить `FWTYPE` на `nftables`:
+Профиль по умолчанию уже использует требуемый `nftables`; перед запуском проверьте, что существующий bind-mounted `config` не сохранил старое значение:
 
 ```bash
 FWTYPE=nftables
@@ -331,7 +352,7 @@ fakes
 
 ### Проверка работы стратегий
 
-Сначала дождитесь `healthy`: healthcheck выполняет настоящее SOCKS5-приветствие на endpoint, а не проверяет внутренний Shadowsocks-порт.
+Сначала дождитесь `healthy`. Локальный healthcheck не открывает SOCKS-соединение и не зависит от WAN/DNS: он проверяет процессы `sslocal`, `ssserver`, `nfqws2`, а при `INIT_APPLY_FW=1` — таблицу zapret2 и NFQUEUE rule с настроенным номером очереди. Поэтому probe не создаёт ожидаемые `early eof` в логах и не скрывает сломанный firewall за живым SOCKS listener.
 
 ```bash
 docker compose ps
@@ -418,6 +439,8 @@ cp config config.before-update
 docker inspect --format '{{.Image}}' "$(docker compose ps -q ss-zapret2)"
 ```
 
+`./config` является bind mount. Новый image и обновлённый `config.default` не заменяют уже существующий рабочий `config` автоматически: перед restart сравните их и перенесите нужные изменения (в частности `FWTYPE=nftables` и актуальный `NFQWS2_OPT`) вручную.
+
 Локальная сборка новой версии:
 
 ```bash
@@ -434,7 +457,7 @@ docker compose pull ss-zapret2
 docker compose up -d --no-build ss-zapret2
 ```
 
-Откат выполняется той же командой после возврата `SS_ZAPRET2_IMAGE` на предыдущий `sha-...` tag и, если нужно, восстановления `config.before-update`. Не используйте только `latest` как точку отката. Для криптографически неизменяемого pin используйте digest вида `ghcr.io/rsnorlax/ss-zapret2@sha256:<digest>`.
+Откат выполняется той же командой после возврата `SS_ZAPRET2_IMAGE` на предыдущий `sha-...` tag и, если нужно, восстановления `config.before-update`. Не используйте только `latest` как точку отката. Предпочтительный immutable pin — digest вида `ghcr.io/rsnorlax/ss-zapret2@sha256:<digest>`; сохраните предыдущий digest до обновления и верните его в `.env` для rollback.
 
 ## Синхронизация с upstream
 

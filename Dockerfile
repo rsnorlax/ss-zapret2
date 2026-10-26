@@ -2,6 +2,9 @@ ARG ALPINE_VERSION=3.21
 ARG ZAPRET_TAG
 ARG CURL_VERSION=8.13.0
 ARG BLOCKCHECKW_VERSION=v0.9.4
+ARG SHADOWSOCKS_VERSION=1.21.2
+ARG SHADOWSOCKS_AMD64_SHA256=53e6cc209ab9f925e5a59c9f43d75b8179551fc9e608846d7649b5e3aff22c16
+ARG SHADOWSOCKS_ARM64_SHA256=19e11f39a1b1cd6f843d2d1b5e7759d557448bc82017ff87b9cfaeeff9814f8f
 
 FROM alpine:${ALPINE_VERSION} AS build
 ARG ZAPRET_TAG
@@ -60,22 +63,49 @@ RUN BLOCKCHECKW_ARCH=$(cat /tmp/blockcheckw_arch) && \
     tar -xzf - -C /opt && \
     chmod +x /opt/blockcheckw
 
+FROM alpine:${ALPINE_VERSION} AS shadowsocks
+ARG SHADOWSOCKS_VERSION
+ARG SHADOWSOCKS_AMD64_SHA256
+ARG SHADOWSOCKS_ARM64_SHA256
+ARG TARGETPLATFORM
+
+WORKDIR /tmp/shadowsocks
+
+RUN case "$TARGETPLATFORM" in \
+      "linux/amd64") \
+        SHADOWSOCKS_TARGET="x86_64-unknown-linux-musl" && \
+        SHADOWSOCKS_SHA256="$SHADOWSOCKS_AMD64_SHA256" ;; \
+      "linux/arm64") \
+        SHADOWSOCKS_TARGET="aarch64-unknown-linux-musl" && \
+        SHADOWSOCKS_SHA256="$SHADOWSOCKS_ARM64_SHA256" ;; \
+      *) echo "Unsupported platform: $TARGETPLATFORM" >&2 && exit 1 ;; \
+    esac && \
+    ARCHIVE="shadowsocks-v${SHADOWSOCKS_VERSION}.${SHADOWSOCKS_TARGET}.tar.xz" && \
+    wget -O "$ARCHIVE" \
+      "https://github.com/shadowsocks/shadowsocks-rust/releases/download/v${SHADOWSOCKS_VERSION}/${ARCHIVE}" && \
+    echo "$SHADOWSOCKS_SHA256  $ARCHIVE" | sha256sum -c - && \
+    tar -xJf "$ARCHIVE" sslocal ssserver && \
+    mkdir -p /usr/local/bin && \
+    cp sslocal ssserver /usr/local/bin/ && \
+    chmod 0755 /usr/local/bin/sslocal /usr/local/bin/ssserver
+
 FROM alpine:${ALPINE_VERSION}
 
 RUN apk add --no-cache \
+      ca-certificates \
       ipset \
       iptables \
       ip6tables \
-      nftables \
-      netcat-openbsd \
-      shadowsocks-rust-sslocal \
-      shadowsocks-rust-ssserver
+      nftables
 
 WORKDIR /opt
 
 COPY --from=build /opt/zapret2-build /opt/zapret2
 COPY --from=build /opt/curl /usr/bin/curl
 COPY --from=build /opt/blockcheckw /usr/bin/blockcheckw
+COPY --from=shadowsocks /usr/local/bin/sslocal /usr/bin/sslocal
+COPY --from=shadowsocks /usr/local/bin/ssserver /usr/bin/ssserver
 COPY --chmod=755 entrypoint.sh /opt/entrypoint.sh
+COPY --chmod=755 healthcheck.sh /opt/healthcheck.sh
 
 ENTRYPOINT ["/opt/entrypoint.sh"]

@@ -7,14 +7,22 @@ on:
     paths:
       - ".env.example"
       - ".github/workflows/docker-build.yml"
+      - "config.default"
       - "Dockerfile"
+      - "docker-compose.yml"
       - "entrypoint.sh"
+      - "healthcheck.sh"
+      - "tests/**"
   pull_request:
     paths:
       - ".env.example"
       - ".github/workflows/docker-build.yml"
+      - "config.default"
       - "Dockerfile"
+      - "docker-compose.yml"
       - "entrypoint.sh"
+      - "healthcheck.sh"
+      - "tests/**"
   workflow_dispatch:
     inputs:
       zapret_tag:
@@ -26,7 +34,26 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run contract tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Check shell syntax
+        run: sh -n entrypoint.sh healthcheck.sh
+
+      - name: Validate Compose configuration
+        env:
+          SS_PASSWORD: test-only-not-for-runtime
+        run: docker compose config >/dev/null
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read

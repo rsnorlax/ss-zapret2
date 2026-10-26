@@ -1,6 +1,7 @@
 services:
   ss-zapret2:
     image: ${SS_ZAPRET2_IMAGE:-ss-zapret2:local}
+    network_mode: bridge
     build:
       context: .
       args:
@@ -13,7 +14,7 @@ services:
       SS_TIMEOUT: ${SS_TIMEOUT:-300}
       SOCKS_PORT: ${SOCKS_PORT:-1081}
       SS_VERBOSE: ${SS_VERBOSE:-0}
-      DNS_SERVER: ${DNS_SERVER:-}
+      DNS_SERVER: ${DNS_SERVER:-quad9_tls}
     ports:
       - "127.0.0.1:${SOCKS_PORT:-1081}:${SOCKS_PORT:-1081}/tcp"
       - "127.0.0.1:${SOCKS_PORT:-1081}:${SOCKS_PORT:-1081}/udp"
@@ -24,11 +25,7 @@ services:
       - ./scripts/examples:/opt/zapret2/init.d/custom.d.examples.linux
       - ./scripts/custom.d:/opt/zapret2/init.d/sysv/custom.d
     healthcheck:
-      test:
-        - CMD-SHELL
-        - |
-          response="$$(printf '\005\001\000' | nc -w 2 127.0.0.1 "$${SOCKS_PORT}" | od -An -tx1 -N2 | tr -d ' \n')"
-          test "$$response" = "0500"
+      test: ["CMD", "/opt/healthcheck.sh"]
       interval: 30s
       timeout: 5s
       retries: 3
