@@ -68,6 +68,7 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=1081)
     parser.add_argument("--domain", default="example.com")
+    parser.add_argument("--dns-server", default="one.one.one.one")
     parser.add_argument("--timeout", type=float, default=5.0)
     args = parser.parse_args()
 
@@ -88,11 +89,13 @@ def main() -> None:
 
         query_id = secrets.randbelow(65536)
         query = dns_query(args.domain, query_id)
-        encoded_domain = args.domain.rstrip(".").encode("idna")
+        encoded_dns_server = args.dns_server.rstrip(".").encode("idna")
+        if not encoded_dns_server or len(encoded_dns_server) > 255:
+            raise ValueError("invalid DNS server name")
         request = (
             b"\x00\x00\x00\x03"
-            + bytes((len(encoded_domain),))
-            + encoded_domain
+            + bytes((len(encoded_dns_server),))
+            + encoded_dns_server
             + struct.pack("!H", 53)
             + query
         )
