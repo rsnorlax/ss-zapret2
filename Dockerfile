@@ -1,5 +1,5 @@
 ARG ALPINE_VERSION=3.21
-ARG ZAPRET_TAG=v1.0.5
+ARG ZAPRET_TAG
 ARG CURL_VERSION=8.13.0
 ARG BLOCKCHECKW_VERSION=v0.9.4
 
@@ -23,7 +23,8 @@ RUN case "$TARGETPLATFORM" in \
       *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
     esac
 
-RUN wget -qO- "https://github.com/bol-van/zapret2/releases/download/${ZAPRET_TAG}/zapret2-${ZAPRET_TAG}.tar.gz" | tar xz && \
+RUN test -n "${ZAPRET_TAG}" && \
+    wget -qO- "https://github.com/bol-van/zapret2/releases/download/${ZAPRET_TAG}/zapret2-${ZAPRET_TAG}.tar.gz" | tar xz && \
     mv zapret2-* ${ZAPRET_SRC}
 
 WORKDIR ${ZAPRET_BUILD}

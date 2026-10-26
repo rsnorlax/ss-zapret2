@@ -1,20 +1,22 @@
 services:
   ss-zapret2:
-    image: vernette/ss-zapret2:v1.0.2
-    container_name: zapret2-proxy
+    image: ${SS_ZAPRET2_IMAGE:-ss-zapret2:local}
+    build:
+      context: .
+      args:
+        ZAPRET_TAG: ${ZAPRET_TAG:-v1.0.6}
     restart: unless-stopped
     environment:
-      - SS_PORT=${SS_PORT}
-      - SS_PASSWORD=${SS_PASSWORD}
-      - SS_ENCRYPT_METHOD=${SS_ENCRYPT_METHOD}
-      - SS_TIMEOUT=${SS_TIMEOUT}
-      - SOCKS_PORT=${SOCKS_PORT}
-      - SS_VERBOSE=${SS_VERBOSE:-0}
+      SS_PORT: ${SS_PORT:-8388}
+      SS_PASSWORD: ${SS_PASSWORD:?copy .env.example to .env and set SS_PASSWORD}
+      SS_ENCRYPT_METHOD: ${SS_ENCRYPT_METHOD:-chacha20-ietf-poly1305}
+      SS_TIMEOUT: ${SS_TIMEOUT:-300}
+      SOCKS_PORT: ${SOCKS_PORT:-1081}
+      SS_VERBOSE: ${SS_VERBOSE:-0}
+      DNS_SERVER: ${DNS_SERVER:-}
     ports:
-      - "127.0.0.1:${SS_PORT}:${SS_PORT}/tcp"
-      - "127.0.0.1:${SS_PORT}:${SS_PORT}/udp"
-      - "127.0.0.1:${SOCKS_PORT}:${SOCKS_PORT}/tcp"
-      - "127.0.0.1:${SOCKS_PORT}:${SOCKS_PORT}/udp"
+      - "127.0.0.1:${SOCKS_PORT:-1081}:${SOCKS_PORT:-1081}/tcp"
+      - "127.0.0.1:${SOCKS_PORT:-1081}:${SOCKS_PORT:-1081}/udp"
     volumes:
       - ./config:/opt/zapret2/config
       - ./lua:/opt/zapret2/lua
@@ -22,14 +24,15 @@ services:
       - ./scripts/examples:/opt/zapret2/init.d/custom.d.examples.linux
       - ./scripts/custom.d:/opt/zapret2/init.d/sysv/custom.d
     healthcheck:
-      test: [
-        "CMD-SHELL",
-        "nc -z localhost ${SS_PORT} && nc -z localhost ${SOCKS_PORT} || exit 1"
-      ]
+      test:
+        - CMD-SHELL
+        - |
+          response="$$(printf '\005\001\000' | nc -w 2 127.0.0.1 "$${SOCKS_PORT}" | od -An -tx1 -N2 | tr -d ' \n')"
+          test "$$response" = "0500"
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
-      start_period: 3s
+      start_period: 10s
     cap_add:
       - NET_ADMIN
     ulimits:
@@ -37,7 +40,7 @@ services:
         soft: 65536
         hard: 65536
     logging:
-      driver: json-file
+      driver: local
       options:
-        max-size: "10m"
+        max-size: "2m"
         max-file: "3"
