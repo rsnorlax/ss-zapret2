@@ -1,20 +1,47 @@
-![Zapret2 Version](https://img.shields.io/badge/zapret2-v1.0.5-red)
-![Docker Pulls](https://img.shields.io/docker/pulls/vernette/ss-zapret2?logo=docker)
+# ss-zapret2 для Podkop
 
-Docker-контейнер на основе [zapret2 от bol-van](https://github.com/bol-van/zapret2) с интегрированным Shadowsocks и SOCKS5 для подключения к контейнеру. Предназначен для удобной маршрутизации трафика через изолированную среду без модификации основной сети. Продолжение [ss-zapret](https://github.com/vernette/ss-zapret).
+![Zapret2 Version](https://img.shields.io/badge/zapret2-v1.0.6-red)
 
-- Изоляция zapret2 в отдельном контейнере
-- Простая интеграция с sing-box, Xray и другими прокси-клиентами
+Минимальный форк [vernette/ss-zapret2](https://github.com/vernette/ss-zapret2) для локального использования на OpenWrt NanoPi R76S вместе с Podkop. Образ остаётся универсальным Linux-контейнером: пути и настройки конкретного роутера в него не зашиты.
 
-Контейнер был протестирован на следующих хостингах:
+Основные отличия от upstream:
 
-- [RocketCloud](https://cloudcore.ru/?affiliate_uuid=ce1874ee-4940-48b1-b37d-60e03cfada66)
-- [HSVDS](https://hsvds.ru/signup/?refid=20241026-9939487-843)
-- [VDS Selectel MSK](https://vds.selectel.ru)
-- [Aeza MSK](https://aeza.net/?ref=463603)
-- [VDC MSK](https://my.vdc.ru/?affid=191) - промокод `VERNETTE` на скидку в 9%
-- [RUVDS MSK](https://ruvds.com)
-- [4VPS](https://4vps.su/r/v4LLSnpUc6Yv) - проверялся сервер в Кемерово. Скидка 20% на первый заказ
+- наружу публикуется только SOCKS5 на loopback хоста, по умолчанию `127.0.0.1:1081`, TCP и UDP;
+- внутренний Shadowsocks-сервер слушает только loopback контейнера и не публикуется;
+- `shadowsocks-rust` берётся из стабильного Alpine 3.21 `community` вместо `shadowsocks-libev` из `edge/testing`;
+- версия zapret2 задаётся build arg `ZAPRET_TAG`, а не требует изменения `Dockerfile`;
+- GHCR CI собирает `linux/amd64` и `linux/arm64`.
+
+## Архитектура
+
+```text
+Podkop / sing-box
+      │  SOCKS5 TCP + UDP
+      ▼
+127.0.0.1:1081 на OpenWrt
+      │  Docker publish только на host loopback
+      ▼
+sslocal ── Shadowsocks по loopback контейнера ──► ssserver
+                                                     │
+                                                     ▼
+                                             zapret2 / nfqws2
+                                                     │
+                                                     ▼
+                                                  Интернет
+```
+
+Порт `1081` не конфликтует с текущим ByeDPI на `127.0.0.1:1080`. У контейнера отдельное сетевое пространство имён, поэтому его правила `nftables`/`iptables` не должны менять сеть хоста или контейнер ByeDPI.
+
+### Почему `shadowsocks-rust`
+
+Решение основано не на недоказанном обещании большей скорости, а на воспроизводимости и поддержке:
+
+- Alpine 3.21 содержит `shadowsocks-rust` 1.21.2 для `x86_64` и `aarch64` в стабильном `community`;
+- upstream-контейнер устанавливает `shadowsocks-libev` из меняющегося `edge/testing`;
+- официальный `shadowsocks-rust` поддерживает SOCKS5, `-U@@ (TCP+UDP) и `--dns@@;
+- CLI используется напрямую, без генерации JSON и связанных с ней проблем экранирования.
+
+Цена решения — примерно 10 МБ установленных бинарников `sslocal`/`ssserver` вместо более компактного libev runtime. Нагрузочное преимущество не заявляется без отдельного теста на NanoPi; совместимость подтверждается multi-arch сборкой и проверками TCP/UDP/DNS.
 
 > [!CAUTION]
 > В режиме `nfqws` контейнер работает только на Linux из-за отсутствия `nfqueue` на других ОС
@@ -32,6 +59,8 @@ Docker-контейнер на основе [zapret2 от bol-van](https://githu
   - [Fake-файлы](#fake-файлы)
   - [Проверка работы стратегий](#проверка-работы-стратегий)
   - [Интеграция с прокси-клиентами](#интеграция-с-прокси-клиентами)
+- [Обновление и откат](#обновление-и-откат)
+- [Синхронизация с upstream](#синхронизация-с-upstream)
 - [Работа Instagram в браузере](#работа-instagram-в-браузере)
 - [Сценарии использования](#сценарии-использования)
 - [Разработка](#разработка)
@@ -56,7 +85,9 @@ sudo dnf install git
 sudo pacman -S git
 ```
 
-2. Установка Docker:
+2. Установка Docker Engine и Compose plugin. Для OpenWrt используйте пакеты своей прошивки; не запускайте установочный скрипт для обычного Linux на OpenWrt.
+
+Для обычного Linux:
 
 ```bash
 bash <(wget -qO- https://get.docker.com)
@@ -67,7 +98,7 @@ bash <(wget -qO- https://get.docker.com)
 1. Клонируйте репозиторий:
 
 ```bash
-git clone https://github.com/vernette/ss-zapret2
+git clone https://github.com/rsnorlax/ss-zapret2
 cd ss-zapret2
 ```
 
@@ -87,32 +118,41 @@ nano .env
 Пример содержимого `.env`:
 
 ```env
-SS_PORT=8388                                # Порт Shadowsocks
-SOCKS_PORT=1080                             # Порт SOCKS5
-SS_PASSWORD=SuperSecurePassword             # Пароль (рекомендуется изменить!)
+ZAPRET_TAG=v1.0.6                           # Build arg, Dockerfile менять не нужно
+SS_PORT=8388                                # Внутренний порт Shadowsocks
+SOCKS_PORT=1081                             # Loopback-порт SOCKS5 для Podkop
+SS_PASSWORD=change-me-before-use            # Внутренний ключ sslocal <-> ssserver
 SS_ENCRYPT_METHOD=chacha20-ietf-poly1305    # Метод шифрования
 SS_TIMEOUT=300                              # Таймаут подключения
+SS_VERBOSE=0                                # 1 включает подробные логи
+DNS_SERVER=1.1.1.1                          # DNS для удалённого резолвинга ssserver
 ```
 
 > [!NOTE]
-> Необязательно использовать `.env` файл. Вы можете задать переменные окружения вручную прямо в `docker-compose.yml`
+> `SS_PORT` не публикуется на хост. Он нужен только для связи двух процессов внутри контейнера. Пустой `DNS_SERVER` включает системный resolver контейнера.
 
 Список переменных окружения в `docker-compose.yml`:
 
-| Переменная                                  | Описание                                         |
-| ------------------------------------------- | ------------------------------------------------ |
-| SS_PORT: `8388`                             | Порт Shadowsocks                                 |
-| SOCKS_PORT: `1080`                          | Порт SOCKS5                                      |
-| SS_PASSWORD: `SuperSecurePassword`          | Пароль для Shadowsocks                           |
-| SS_ENCRYPT_METHOD: `chacha20-ietf-poly1305` | Метод шифрования Shadowsocks                     |
-| SS_TIMEOUT: `300`                           | Таймаут сокета Shadowsocks в секундах            |
-| SS_VERBOSE: `0`, `1`                        | Логгирование Shadowsocks. По умолчанию отключено |
+| Переменная                                  | Compose / `.env.example` | Назначение |
+| ------------------------------------------- | --------------------- | ---------- |
+| `ZAPRET_TAG`                                | `v1.0.6`              | Release tag zapret2 для сборки |
+| `SS_PORT`                                   | `8388`                | Внутренний порт Shadowsocks |
+| `SOCKS_PORT`                                | `1081`                | SOCKS5 для Podkop; TCP и UDP |
+| `SS_PASSWORD`                               | обязательна           | Внутренний ключ Shadowsocks |
+| `SS_ENCRYPT_METHOD`                         | `chacha20-ietf-poly1305` | Метод Shadowsocks |
+| `SS_TIMEOUT`                                | `300`                 | Таймаут в секундах |
+| `SS_VERBOSE`                                | `0`                   | `1` включает подробные логи |
+| `DNS_SERVER`                                | пусто / `1.1.1.1`       | DNS resolver для `ssserver` |
 
-4. Запустите контейнер:
+4. Соберите и запустите контейнер:
 
 ```bash
+docker compose build --pull
 docker compose up -d
+docker compose ps
 ```
+
+На хосте должны появиться только `127.0.0.1:1081/tcp` и `127.0.0.1:1081/udp`. Фиксированного `container_name` нет, поэтому отдельный Compose project можно поднять параллельно для теста.
 
 ## Изменение конфигурации
 
@@ -188,7 +228,7 @@ curl "https://www.youtube.com/youtubei/v1/player" \
   --silent \
   --request POST \
   --json '{"videoId":"dQw4w9WgXcQ","context":{"client":{"clientName":"ANDROID","clientVersion":"21.02.35","androidSdkVersion":30,"userAgent":"com.google.android.youtube/21.02.35(Linux;U;Android11)gzip","osName":"Android","osVersion":"11"}}}' \
-  --proxy socks5://localhost:1080 |
+  --proxy socks5h://127.0.0.1:1081 |
   jq -r ".streamingData.serverAbrStreamingUrl" |
   awk -F'/' '{print $3}'
 ```
@@ -291,23 +331,37 @@ fakes
 
 ### Проверка работы стратегий
 
-Проверить работу стратегий можно используя скрипт [censorcheck](https://github.com/vernette/censorcheck), указав локальный прокси контейнера:
+Сначала дождитесь `healthy`: healthcheck выполняет настоящее SOCKS5-приветствие на endpoint, а не проверяет внутренний Shadowsocks-порт.
 
 ```bash
-bash <(wget -qO- https://github.com/vernette/censorcheck/raw/master/censorcheck.sh) --mode dpi --proxy localhost:1080
+docker compose ps
 ```
 
-Проверить работу видео-доменов YouTube можно следующей командой:
+TCP и удалённое DNS-разрешение через SOCKS:
 
 ```bash
-curl --connect-to ::speedtest.selectel.ru https://manifest.googlevideo.com/100MB -k -o/dev/null -x socks5://localhost:1080
+curl --fail --show-error --socks5-hostname 127.0.0.1:1081 https://example.com/ -o /dev/null
 ```
 
-В поле `Current speed` должна расти скорость скачивания. Если она вообще не идёт или постоянно прыгает (во втором случае всё равно нужно проверить работу видео вручную) - стратегия не подходит.
+Ключ `--socks5-hostname` принципиален: имя отправляется proxy-серверу, поэтому успех подтверждает TCP и DNS на стороне `ssserver`. Он ещё не доказывает UDP.
+
+UDP ASSOCIATE и DNS-запрос по UDP проверяет автономный probe без сторонних Python-пакетов:
+
+```bash
+python3 tests/check_socks_udp_dns.py --host 127.0.0.1 --port 1081 --domain example.com
+```
+
+Успешный результат заканчивается строкой `PASS`. После этого отдельно проверяйте нужные домены/приложения: probe доказывает транспорт SOCKS5 TCP+UDP и DNS, но не эффективность выбранной стратегии zapret2 против конкретного DPI.
 
 ### Интеграция с прокси-клиентами
 
-Интеграция ничем не отличается от [ss-zapret](https://github.com/vernette/ss-zapret).
+В Podkop добавьте SOCKS5 outbound без аутентификации:
+
+- адрес: `127.0.0.1`;
+- порт: `1081`;
+- UDP: включён.
+
+Это верно, когда Podkop работает на самом OpenWrt-хосте. Для Podkop в другом контейнере `127.0.0.1` укажет на тот контейнер, поэтому понадобится общая Docker network и обращение по имени сервиса; публиковать SOCKS на `0.0.0.0` ради этого не следует.
 
 Примеры интеграции с sing-box, Xray и в существующий проект: [INTEGRATION.md](https://github.com/vernette/ss-zapret/blob/master/INTEGRATION.md)
 
@@ -340,27 +394,69 @@ docker compose down && docker compose up -d
 
 ## Разработка
 
-Сборка образа с другой версией zapret2:
+Сборка образа с другой версией zapret2 не требует изменения `Dockerfile`:
 
 ```bash
-docker build -t ss-zapret2:v0.8 --build-arg ZAPRET_TAG=v0.8 .
+docker build --build-arg ZAPRET_TAG=v1.0.6 -t ss-zapret2:v1.0.6 .
 ```
 
-Затем отредактируйте `docker-compose.yml`:
+Для Compose достаточно изменить `ZAPRET_TAG` в локальном `.env` и пересобрать:
 
-```yaml
-ss-zapret2:
-  image: ss-zapret2:v0.8
+```bash
+docker compose build --pull
+docker compose up -d
 ```
+
+CI принимает тот же `zapret_tag` при ручном запуске и публикует GHCR-теги `latest`, `vX.Y.Z` и неизменяемый для конкретного коммита `sha-<git-sha>`. На pull request выполняется multi-arch сборка без публикации. После первого push сделайте GHCR package публичным, если образ должен скачиваться на роутер без `docker login`.
+
+## Обновление и откат
+
+Перед обновлением сохраните рабочий `config` и текущий идентификатор образа:
+
+```bash
+cp config config.before-update
+docker inspect --format '{{.Image}}' "$(docker compose ps -q ss-zapret2)"
+```
+
+Локальная сборка новой версии:
+
+```bash
+sed -i 's/^ZAPRET_TAG=.*/ZAPRET_TAG=v1.0.6/' .env
+docker compose build --pull
+docker compose up -d
+docker compose ps
+```
+
+Для опубликованного образа задайте, например, `SS_ZAPRET2_IMAGE=ghcr.io/rsnorlax/ss-zapret2:sha-<git-sha>` в `.env`, затем:
+
+```bash
+docker compose pull ss-zapret2
+docker compose up -d --no-build ss-zapret2
+```
+
+Откат выполняется той же командой после возврата `SS_ZAPRET2_IMAGE` на предыдущий `sha-...` tag и, если нужно, восстановления `config.before-update`. Не используйте только `latest` как точку отката.
+
+## Синхронизация с upstream
+
+В локальном клоне `upstream` должен указывать на `vernette/ss-zapret2`, а `origin` — на ваш GitHub fork:
+
+```bash
+git remote add upstream https://github.com/vernette/ss-zapret2.git
+git fetch upstream
+git log --oneline --left-right master...upstream/master
+git merge upstream/master
+```
+
+После merge повторите проверки из раздела выше и multi-arch CI. Обычный merge не переписывает опубликованную историю. Rebase имеет смысл только для ещё не опубликованных локальных коммитов.
 
 ## Вклад в разработку
 
-Если у вас есть идеи для улучшения проекта, вы нашли баг или хотите предложить новую функциональность - не стесняйтесь создавать [issue](https://github.com/vernette/ss-zapret2/issues) или отправлять [pull request](https://github.com/vernette/ss-zapret2/pulls).
+Проблемы базового контейнера сначала сверяйте с [upstream issues](https://github.com/vernette/ss-zapret2/issues). Podkop-профиль этого форка старайтесь сохранять отдельными небольшими коммитами поверх upstream.
 
 ## Предупреждение про Shadowsocks и SOCKS5
 
 > [!IMPORTANT]
-> Shadowsocks и SOCKS5 предназначены только для подключения в **локальной** сети. Не рекомендуется использовать их для внешнего подключения, так как это может скомпрометировать сервер
+> Compose публикует SOCKS5 только на `127.0.0.1`. Не меняйте bind на `0.0.0.0` и не открывайте порт в WAN. Внутренний Shadowsocks-порт вообще не публикуется.
 
 ## Благодарности
 
