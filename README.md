@@ -407,7 +407,7 @@ docker compose build --pull
 docker compose up -d
 ```
 
-CI принимает тот же `zapret_tag` при ручном запуске и публикует GHCR-теги `latest`, `vX.Y.Z` и неизменяемый для конкретного коммита `sha-<git-sha>`. На pull request выполняется multi-arch сборка без публикации. После первого push сделайте GHCR package публичным, если образ должен скачиваться на роутер без `docker login`.
+CI принимает тот же `zapret_tag` при ручном запуске и публикует GHCR-теги `latest`, `vX.Y.Z` и привязанный к конкретному коммиту `sha-<git-sha>`. На pull request выполняется multi-arch сборка без публикации. После первого push сделайте GHCR package публичным, если образ должен скачиваться на роутер без `docker login`.
 
 ## Обновление и откат
 
@@ -434,7 +434,7 @@ docker compose pull ss-zapret2
 docker compose up -d --no-build ss-zapret2
 ```
 
-Откат выполняется той же командой после возврата `SS_ZAPRET2_IMAGE` на предыдущий `sha-...` tag и, если нужно, восстановления `config.before-update`. Не используйте только `latest` как точку отката.
+Откат выполняется той же командой после возврата `SS_ZAPRET2_IMAGE` на предыдущий `sha-...` tag и, если нужно, восстановления `config.before-update`. Не используйте только `latest` как точку отката. Для криптографически неизменяемого pin используйте digest вида `ghcr.io/rsnorlax/ss-zapret2@sha256:<digest>`.
 
 ## Синхронизация с upstream
 
